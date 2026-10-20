@@ -1080,6 +1080,7 @@
         let isShuffle = false;
         let isRepeat = false;
         let isUserPaused = false;
+        let isSeeking = false;
 
         function checkNetworkStatus() {
             const isOffline = !navigator.onLine;
@@ -1238,7 +1239,6 @@
             }
         }
 
-        // REAL-TIME SYNC CLEANUP: Verifies downloaded songs against actual cache and live server songs
         async function syncAndCleanDownloadedSongs(serverSongs) {
             let downloaded = getSavedDownloadedSongs();
             if (downloaded.length === 0) return [];
@@ -1888,8 +1888,26 @@
             }
         };
 
-        audioPlayer.ontimeupdate = () => {
+        progressBar.addEventListener('input', () => {
+            isSeeking = true;
             if (audioPlayer.duration) {
+                const manualPercent = progressBar.value;
+                progressBar.style.background = `linear-gradient(to right, #ffffff 0%, #ffffff ${manualPercent}%, rgba(255, 255, 255, 0.2) ${manualPercent}%, rgba(255, 255, 255, 0.2) 100%)`;
+                const previewTime = (manualPercent / 100) * audioPlayer.duration;
+                currentTimeEl.innerText = formatTime(previewTime);
+            }
+        });
+
+        progressBar.addEventListener('change', () => {
+            if (audioPlayer.duration) {
+                const newTime = (progressBar.value / 100) * audioPlayer.duration;
+                audioPlayer.currentTime = newTime;
+            }
+            isSeeking = false;
+        });
+
+        audioPlayer.ontimeupdate = () => {
+            if (!isSeeking && audioPlayer.duration) {
                 const progress = (audioPlayer.currentTime / audioPlayer.duration) * 100;
                 updateProgressLineFill(progress);
                 miniProgressBar.style.width = `${progress}%`;
@@ -1905,14 +1923,6 @@
                         });
                     } catch (err) {}
                 }
-            }
-        };
-
-        progressBar.oninput = () => {
-            if (audioPlayer.duration) {
-                const newTime = (progressBar.value / 100) * audioPlayer.duration;
-                audioPlayer.currentTime = newTime;
-                updateProgressLineFill(progressBar.value);
             }
         };
 
