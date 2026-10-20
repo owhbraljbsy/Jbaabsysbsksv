@@ -955,7 +955,6 @@
     <script>
         const backendUrl = 'https://osnnosisubeje.onrender.com';
         
-        // Wake up Render server instantly on app load
         fetch(`${backendUrl}/ping`).catch(() => {});
 
         if ('serviceWorker' in navigator) {
@@ -969,29 +968,6 @@
             e.preventDefault();
             deferredPrompt = e;
         });
-
-        const installAppBtn = document.getElementById('install-app-btn');
-        if (installAppBtn) {
-            installAppBtn.onclick = async () => {
-                if (deferredPrompt) {
-                    deferredPrompt.prompt();
-                    const { outcome } = await deferredPrompt.userChoice;
-                    if (outcome === 'accepted') {
-                        deferredPrompt = null;
-                    }
-                } else {
-                    alert("App install is available via Chrome browser menu (Tap top-right 3 dots -> 'Install app').");
-                }
-            };
-        }
-
-        const devsBtn = document.getElementById('devs-btn');
-        const devsModal = document.getElementById('devs-modal');
-        const closeDevsModal = document.getElementById('close-devs-modal');
-
-        devsBtn.onclick = () => { devsModal.style.display = 'flex'; };
-        closeDevsModal.onclick = () => { devsModal.style.display = 'none'; };
-        devsModal.onclick = (e) => { if (e.target === devsModal) devsModal.style.display = 'none'; };
 
         function normalizePlaylistName(name) {
             return name ? name.toLowerCase().replace(/[^a-z0-9]/g, '') : "";
@@ -1256,9 +1232,34 @@
             try {
                 const cache = await caches.open(AUDIO_CACHE_NAME);
                 const match = await cache.match(url, { ignoreSearch: true });
-                if (match) return true;
-            } catch {}
-            return getSavedDownloadedSongs().some(s => s.url === url);
+                return !!match;
+            } catch {
+                return false;
+            }
+        }
+
+        // REAL-TIME SYNC CLEANUP: Verifies downloaded songs against actual cache and live server songs
+        async function syncAndCleanDownloadedSongs(serverSongs) {
+            let downloaded = getSavedDownloadedSongs();
+            if (downloaded.length === 0) return [];
+
+            if (!('caches' in window)) return downloaded;
+            const cache = await caches.open(AUDIO_CACHE_NAME);
+            const validDownloaded = [];
+
+            for (const song of downloaded) {
+                const match = await cache.match(song.url, { ignoreSearch: true });
+                const stillOnServer = serverSongs.some(s => s.url === song.url);
+                
+                if (match && stillOnServer) {
+                    validDownloaded.push(song);
+                } else {
+                    try { await cache.delete(song.url); } catch (e) {}
+                }
+            }
+
+            localStorage.setItem('vision_downloaded_songs', JSON.stringify(validDownloaded));
+            return validDownloaded;
         }
 
         async function updatePlayerDownloadUI() {
@@ -1310,7 +1311,7 @@
                 }
                 await updatePlayerDownloadUI();
                 renderSpotifyHomeScreen();
-                alert(`"${song.title}" downloaded for offline play!`);
+                alert(`"${song.title}" downloaded successfully!`);
             } catch (e) {
                 if (btn) btn.innerHTML = oldHTML;
                 alert("Download failed! Please check your internet connection.");
@@ -1345,6 +1346,14 @@
         function getSavedLikedSongs() {
             try { return JSON.parse(localStorage.getItem('vision_liked_songs') || '[]'); } 
             catch { return []; }
+        }
+
+        function syncAndCleanLikedSongs(serverSongs) {
+            let liked = getSavedLikedSongs();
+            if (serverSongs.length === 0) return liked;
+            const validLiked = liked.filter(song => serverSongs.some(s => s.url === song.url));
+            localStorage.setItem('vision_liked_songs', JSON.stringify(validLiked));
+            return validLiked;
         }
 
         function isSongInLikedList(song) {
@@ -1457,25 +1466,30 @@
 
         async function fetchSongs() {
             checkNetworkStatus();
-            
-            playlists = { 
-                "Liked Songs": getSavedLikedSongs(),
-                "Downloaded Songs": getSavedDownloadedSongs()
-            };
-            
-            dynamicPlaylistMetadata = [
-                { name: "Liked Songs", image: getCoverForPlaylist("Liked Songs"), isLiked: true },
-                { name: "Downloaded Songs", image: getCoverForPlaylist("Downloaded Songs"), isDownloaded: true }
-            ];
-
             initLastPlayedOnStartup();
 
             try {
                 const timestamp = Date.now();
+                const response = await fetch(`${backendUrl}/songs?t=${timestamp}`);
+                rawSongs = await response.json();
+
+                const cleanedDownloaded = await syncAndCleanDownloadedSongs(rawSongs);
+                const cleanedLiked = syncAndCleanLikedSongs(rawSongs);
+
+                playlists = { 
+                    "Liked Songs": cleanedLiked,
+                    "Downloaded Songs": cleanedDownloaded
+                };
+
                 const plRes = await fetch(`${backendUrl}/playlists?t=${timestamp}`);
                 const dynamicFolders = await plRes.json();
 
                 const seenFolders = new Set(["likedsongs", "downloadedsongs"]);
+                dynamicPlaylistMetadata = [
+                    { name: "Liked Songs", image: getCoverForPlaylist("Liked Songs"), isLiked: true },
+                    { name: "Downloaded Songs", image: getCoverForPlaylist("Downloaded Songs"), isDownloaded: true }
+                ];
+
                 dynamicFolders.forEach(folder => {
                     const norm = normalizePlaylistName(folder);
                     if (folder && !seenFolders.has(norm)) {
@@ -1484,9 +1498,6 @@
                         dynamicPlaylistMetadata.push({ name: folder, image: getCoverForPlaylist(folder) });
                     }
                 });
-
-                const response = await fetch(`${backendUrl}/songs?t=${timestamp}`);
-                rawSongs = await response.json();
 
                 rawSongs.forEach(song => {
                     const norm = normalizePlaylistName(song.playlist || "Hindi Top Hits");
